@@ -1,5 +1,5 @@
-# Use Node.js 20 as base image to match engine requirements
-FROM node:20-alpine
+# Build stage
+FROM node:20-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -13,25 +13,48 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Build the application
+# Build the frontend application
 RUN npm run build
 
-# Create a non-root user
+# Production stage
+FROM nginx:alpine
+
+# Install Node.js and required packages in the nginx container for the backend
+RUN apk add --no-cache nodejs npm gettext
+
+# Copy built frontend files to nginx html directory
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# Copy server code and package files
+COPY --from=builder /app/server /app/server
+COPY --from=builder /app/package*.json /app/
+COPY --from=builder /app/node_modules /app/node_modules
+
+# Remove default nginx configs and copy our configuration
+RUN rm -f /etc/nginx/conf.d/default.conf /etc/nginx/conf.d/*.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Ensure the main nginx.conf doesn't override our root directive
+RUN sed -i '/root.*html/d' /etc/nginx/nginx.conf
+
+# Copy and setup entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create a non-root user for the backend process
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nextjs -u 1001
 
-# Change ownership of the app directory before switching user
+# Change ownership of the app directory
 RUN chown -R nextjs:nodejs /app
-
-# Switch to non-root user
-USER nextjs
-
-# Expose port 8080
-EXPOSE 8080
 
 # Set environment variables
 ENV PORT=8080
+ENV BACKEND_PORT=3000
 ENV NODE_ENV=production
 
-# Start the production server using tsx to handle TypeScript
-CMD ["npx", "tsx", "server/index.ts"]
+# Expose the PORT for nginx
+EXPOSE ${PORT}
+
+# Use the entrypoint script
+ENTRYPOINT ["/entrypoint.sh"]

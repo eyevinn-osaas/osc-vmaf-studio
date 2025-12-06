@@ -1,27 +1,34 @@
-#!/bin/bash
+#!/bin/sh
 set -e
 
-# Enhanced Configuration File Generation
-echo "Generating configuration files from environment variables..."
+# Function to handle shutdown gracefully
+cleanup() {
+    echo "Shutting down services..."
+    kill $BACKEND_PID 2>/dev/null || true
+    nginx -s quit 2>/dev/null || true
+    wait
+    exit 0
+}
 
-# Generate .env (env format)
-echo "Generating .env..."
-cat > ".env" << 'EOF'
-# Generated environment configuration
-PORT=\$\{PORT:-3001\}
-NODEENV=\$\{NODE_ENV:-development\}
-S3_ENDPOINT=\$\{S3_ENDPOINT:-\}
-S3_REGION=\$\{S3_REGION:-us-east-1\}
-S3_ACCESSKEYID=\$\{S3_ACCESS_KEY_ID:-\}
-S3_SECRETACCESSKEY=\$\{S3_SECRET_ACCESS_KEY:-\}
-S3_FORCEPATHSTYLE=\$\{S3_FORCE_PATH_STYLE:-\}
-VMAF_APIKEY=\$\{VMAF_API_KEY:-\}
-VMAF_BASEURL=\$\{VMAF_BASE_URL:-https://api.osaas.io\}
-CORS_ORIGIN=\$\{CORS_ORIGIN:-http://localhost:5173\}
-LOGGING_LEVEL=\$\{LOG_LEVEL:-info\}
-SESSION_SECRET=\$\{SESSION_SECRET:-\}
-UPLOAD_MAXFILESIZEMB=\$\{MAX_FILE_SIZE_MB:-500\}
-EOF
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT
 
-# Execute the original command
-exec "$@"
+# Substitute environment variables in nginx config
+envsubst '${PORT} ${BACKEND_PORT}' < /etc/nginx/conf.d/default.conf > /tmp/nginx.conf
+mv /tmp/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Start the backend server in the background as the nodejs user
+echo "Starting backend server on port ${BACKEND_PORT:-3000}..."
+su -s /bin/sh nextjs -c "cd /app && PORT=${BACKEND_PORT:-3000} npx tsx server/index.ts" &
+BACKEND_PID=$!
+
+# Wait a moment for the backend to start
+sleep 3
+
+# Start nginx in the foreground
+echo "Starting nginx..."
+nginx -g 'daemon off;' &
+NGINX_PID=$!
+
+# Wait for either process to exit
+wait
